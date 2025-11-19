@@ -1,163 +1,312 @@
 """
-Comprehensive Test Suite for InterruptHandler.
+Lightweight behavioural checks for InterruptHandler.
 
-Run:
+Run with:
     python test_interrupt_handler.py
 """
 
 import asyncio
 import sys
+
 from interrupt_handler import InterruptHandler
 
 
-class TestResults:
-    def __init__(self) -> None:
-        self.passed = 0
-        self.failed = 0
-        self.tests = []
+def build_cases():
+    """
+    Each entry describes one test probe for the handler.
 
-    def add_result(self, name: str, expected: str, actual: str, passed: bool) -> None:
-        self.tests.append(
-            {"name": name, "expected": expected, "actual": actual, "passed": passed}
-        )
-        if passed:
-            self.passed += 1
-        else:
-            self.failed += 1
+    Fields:
+        id           : short numeric id
+        title        : human label
+        text         : user transcript
+        conf         : STT confidence
+        lang         : language code
+        speaking     : whether agent is currently talking
+        expect       : expected InterruptHandler 'action'
+    """
+    return [
+        # --- Core scenarios from the spec ---
+        {
+            "id": 1,
+            "title": "Simple English filler while agent speaks",
+            "text": "umm",
+            "conf": 0.85,
+            "lang": "en",
+            "speaking": True,
+            "expect": "IGNORE",
+        },
+        {
+            "id": 2,
+            "title": "Explicit interruption phrase",
+            "text": "wait one second",
+            "conf": 0.92,
+            "lang": "en",
+            "speaking": True,
+            "expect": "INTERRUPT",
+        },
+        {
+            "id": 3,
+            "title": "Filler while agent is silent",
+            "text": "umm",
+            "conf": 0.88,
+            "lang": "en",
+            "speaking": False,
+            "expect": "REGISTER",
+        },
+        {
+            "id": 4,
+            "title": "Filler plus stop command",
+            "text": "umm okay stop",
+            "conf": 0.87,
+            "lang": "en",
+            "speaking": True,
+            "expect": "INTERRUPT",
+        },
+        {
+            "id": 5,
+            "title": "Low-confidence background noise",
+            "text": "hmm yeah",
+            "conf": 0.35,
+            "lang": "en",
+            "speaking": True,
+            "expect": "IGNORE",
+        },
+        {
+            "id": 6,
+            "title": "Hindi filler during agent speech",
+            "text": "haan",
+            "conf": 0.88,
+            "lang": "hi",
+            "speaking": True,
+            "expect": "IGNORE",
+        },
+        {
+            "id": 7,
+            "title": "Custom runtime filler (\"basically\")",
+            "text": "basically",
+            "conf": 0.85,
+            "lang": "en",
+            "speaking": True,
+            "expect": "IGNORE",
+        },
+        {
+            "id": 8,
+            "title": "Hindi hard stop command",
+            "text": "ruko",
+            "conf": 0.90,
+            "lang": "hi",
+            "speaking": True,
+            "expect": "INTERRUPT",
+        },
+        {
+            "id": 9,
+            "title": "Empty transcript",
+            "text": "",
+            "conf": 0.70,
+            "lang": "en",
+            "speaking": True,
+            "expect": "IGNORE",
+        },
+        {
+            "id": 10,
+            "title": "Normal question while agent quiet",
+            "text": "what is the weather",
+            "conf": 0.95,
+            "lang": "en",
+            "speaking": False,
+            "expect": "REGISTER",
+        },
+        {
+            "id": 11,
+            "title": "Sequence of multiple fillers",
+            "text": "uh umm hmm",
+            "conf": 0.85,
+            "lang": "en",
+            "speaking": True,
+            "expect": "IGNORE",
+        },
+        {
+            "id": 12,
+            "title": "Question that should cut in",
+            "text": "how does that work",
+            "conf": 0.92,
+            "lang": "en",
+            "speaking": True,
+            "expect": "INTERRUPT",
+        },
 
-    def print_summary(self) -> bool:
-        print("\n" + "-" * 70)
-        print("TEST SUITE SUMMARY")
-        print("-" * 70)
-        for t in self.tests:
-            status = "PASS" if t["passed"] else "FAIL"
-            print(f"{status} | {t['name']}")
-            print(f"      Expected: {t['expected']}  Got: {t['actual']}")
-        print("-" * 70)
-        total = len(self.tests)
-        print(f"Total : {total} tests")
-        print(f"Passed: {self.passed} ({(self.passed / max(total, 1)) * 100:.1f}%)")
-        print(f"Failed: {self.failed}")
-        print("-" * 70 + "\n")
-        return self.failed == 0
+        # --- Additional coverage cases (13–25) ---
+        {
+            "id": 13,
+            "title": "Long stretched hesitation sound",
+            "text": "hmmmmmmmmmmm",
+            "conf": 0.90,
+            "lang": "en",
+            "speaking": True,
+            "expect": "IGNORE",
+        },
+        {
+            "id": 14,
+            "title": "Hesitation then meaningful phrase",
+            "text": "uhh okay I think",
+            "conf": 0.90,
+            "lang": "en",
+            "speaking": True,
+            "expect": "INTERRUPT",
+        },
+        {
+            "id": 15,
+            "title": "Spanish filler word while speaking",
+            "text": "este",
+            "conf": 0.80,
+            "lang": "es",
+            "speaking": True,
+            "expect": "IGNORE",
+        },
+        {
+            "id": 16,
+            "title": "French filler while speaking",
+            "text": "euh",
+            "conf": 0.85,
+            "lang": "fr",
+            "speaking": True,
+            "expect": "IGNORE",
+        },
+        {
+            "id": 17,
+            "title": "French filler plus English stop",
+            "text": "euh stop",
+            "conf": 0.90,
+            "lang": "fr",
+            "speaking": True,
+            "expect": "INTERRUPT",
+        },
+        {
+            "id": 18,
+            "title": "Very low-confidence real sentence, silent agent",
+            "text": "hello can you hear me",
+            "conf": 0.30,
+            "lang": "en",
+            "speaking": False,
+            "expect": "IGNORE",
+        },
+        {
+            "id": 19,
+            "title": "High-confidence filler while agent quiet",
+            "text": "hmm hmm",
+            "conf": 0.90,
+            "lang": "en",
+            "speaking": False,
+            "expect": "REGISTER",
+        },
+        {
+            "id": 20,
+            "title": "Short affirmative while agent speaks",
+            "text": "yes",
+            "conf": 0.90,
+            "lang": "en",
+            "speaking": True,
+            "expect": "INTERRUPT",
+        },
+        {
+            "id": 21,
+            "title": "Gibberish token while agent speaks",
+            "text": "asdfghjk",
+            "conf": 0.90,
+            "lang": "en",
+            "speaking": True,
+            "expect": "INTERRUPT",
+        },
+        {
+            "id": 22,
+            "title": "Polite follow-up question while speaking",
+            "text": "can you explain that again",
+            "conf": 0.95,
+            "lang": "en",
+            "speaking": True,
+            "expect": "INTERRUPT",
+        },
+        {
+            "id": 23,
+            "title": "Spanish request while agent quiet",
+            "text": "puedes repetir eso",
+            "conf": 0.93,
+            "lang": "es",
+            "speaking": False,
+            "expect": "REGISTER",
+        },
+        {
+            "id": 24,
+            "title": "Variant of hold-on command",
+            "text": "hold on for a second",
+            "conf": 0.90,
+            "lang": "en",
+            "speaking": True,
+            "expect": "INTERRUPT",
+        },
+        {
+            "id": 25,
+            "title": "Hindi filler combination while quiet",
+            "text": "hmm haan theek",
+            "conf": 0.90,
+            "lang": "hi",
+            "speaking": False,
+            "expect": "REGISTER",
+        },
+    ]
 
 
-async def run_tests() -> int:
-    results = TestResults()
-
-    print("\n" + "-" * 70)
-    print("INTERRUPT HANDLER TESTS")
-    print("-" * 70 + "\n")
+async def main() -> int:
+    print("\n================= INTERRUPT HANDLER CHECK =================\n")
 
     handler = InterruptHandler(
         confidence_threshold=0.6,
         enable_contextual_analysis=True,
         enable_multi_language=True,
-        log_events=False,
+        log_events=False,  # keep test output focused
     )
 
-    # 1: User filler while agent speaks
-    handler.set_agent_speaking(True)
-    res = await handler.process_speech_event("umm", 0.85, "en")
-    expected = "IGNORE"
-    actual = res["action"]
-    results.add_result("Filler while agent speaking", expected, actual, actual == expected)
-    print("Test 1:", actual, res["reason"])
-
-    # 2: Real interruption while agent speaks
-    handler.set_agent_speaking(True)
-    res = await handler.process_speech_event("wait one second", 0.92, "en")
-    expected = "INTERRUPT"
-    actual = res["action"]
-    results.add_result("Priority command interruption", expected, actual, actual == expected)
-    print("Test 2:", actual, res["reason"])
-
-    # 3: Filler while agent quiet
-    handler.set_agent_speaking(False)
-    res = await handler.process_speech_event("umm", 0.88, "en")
-    expected = "REGISTER"
-    actual = res["action"]
-    results.add_result("Filler while quiet", expected, actual, actual == expected)
-    print("Test 3:", actual, res["reason"])
-
-    # 4: Mixed filler + command
-    handler.set_agent_speaking(True)
-    res = await handler.process_speech_event("umm okay stop", 0.87, "en")
-    expected = "INTERRUPT"
-    actual = res["action"]
-    results.add_result("Mixed filler + command", expected, actual, actual == expected)
-    print("Test 4:", actual, res["reason"])
-
-    # 5: Low confidence noise
-    handler.set_agent_speaking(True)
-    res = await handler.process_speech_event("hmm yeah", 0.35, "en")
-    expected = "IGNORE"
-    actual = res["action"]
-    results.add_result("Low confidence noise", expected, actual, actual == expected)
-    print("Test 5:", actual, res["reason"])
-
-    # 6: Hindi filler
-    handler.set_agent_speaking(True)
-    res = await handler.process_speech_event("haan", 0.88, "hi")
-    expected = "IGNORE"
-    actual = res["action"]
-    results.add_result("Hindi filler", expected, actual, actual == expected)
-    print("Test 6:", actual, res["reason"])
-
-    # 7: Dynamic filler addition
+    # one-time dynamic filler registration
     handler.add_custom_fillers("en", ["basically"])
-    handler.set_agent_speaking(True)
-    res = await handler.process_speech_event("basically", 0.85, "en")
-    expected = "IGNORE"
-    actual = res["action"]
-    results.add_result("Dynamic filler add", expected, actual, actual == expected)
-    print("Test 7:", actual, res["reason"])
 
-    # 8: Priority Hindi command
-    handler.set_agent_speaking(True)
-    res = await handler.process_speech_event("ruko", 0.9, "hi")
-    expected = "INTERRUPT"
-    actual = res["action"]
-    results.add_result("Hindi priority command", expected, actual, actual == expected)
-    print("Test 8:", actual, res["reason"])
+    cases = build_cases()
+    success_flags = []
 
-    # 9: Empty input
-    handler.set_agent_speaking(True)
-    res = await handler.process_speech_event("", 0.7, "en")
-    expected = "IGNORE"
-    actual = res["action"]
-    results.add_result("Empty input", expected, actual, actual == expected)
-    print("Test 9:", actual, res["reason"])
+    # header row
+    print(f"{'ID':>3} | {'RESULT':^7} | {'EXPECTED':^9} | {'ACTUAL':^9} | TEXT")
+    print("-" * 72)
 
-    # 10: Meaningful speech while quiet
-    handler.set_agent_speaking(False)
-    res = await handler.process_speech_event("what is the weather", 0.95, "en")
-    expected = "REGISTER"
-    actual = res["action"]
-    results.add_result("Question while quiet", expected, actual, actual == expected)
-    print("Test 10:", actual, res["reason"])
+    for case in cases:
+        handler.set_agent_speaking(case["speaking"])
+        res = await handler.process_speech_event(
+            transcript=case["text"],
+            confidence=case["conf"],
+            language=case["lang"],
+        )
+        action = res["action"]
+        ok = (action == case["expect"])
+        success_flags.append(ok)
 
-    # 11: Multiple fillers sequence
-    handler.set_agent_speaking(True)
-    res = await handler.process_speech_event("uh umm hmm", 0.85, "en")
-    expected = "IGNORE"
-    actual = res["action"]
-    results.add_result("Multiple fillers", expected, actual, actual == expected)
-    print("Test 11:", actual, res["reason"])
+        status = "OK" if ok else "MISMATCH"
+        print(
+            f"{case['id']:>3} | {status:^7} | {case['expect']:^9} | {action:^9} | {case['title']}"
+        )
 
-    # 12: Question while agent speaking
-    handler.set_agent_speaking(True)
-    res = await handler.process_speech_event("how does that work", 0.92, "en")
-    expected = "INTERRUPT"
-    actual = res["action"]
-    results.add_result("Question interruption", expected, actual, actual == expected)
-    print("Test 12:", actual, res["reason"])
-
+    # print handler’s own statistics at the end (separate from pass/fail)
+    print("\n---- Internal statistics from InterruptHandler ----")
     handler.print_summary()
-    all_passed = results.print_summary()
-    return 0 if all_passed else 1
+
+    total = len(cases)
+    passed = sum(1 for x in success_flags if x)
+    failed = total - passed
+
+    print("Overall test result:")
+    print(f"  Passed: {passed}/{total}")
+    print(f"  Failed: {failed}/{total}\n")
+
+    return 0 if failed == 0 else 1
 
 
 if __name__ == "__main__":
-    exit_code = asyncio.run(run_tests())
+    exit_code = asyncio.run(main())
     sys.exit(exit_code)

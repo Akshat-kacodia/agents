@@ -11,7 +11,7 @@ import os
 import logging
 import asyncio
 from typing import Optional
-
+from interrupt_handler import InterruptHandler
 from dotenv import load_dotenv
 
 from livekit.agents import (
@@ -22,23 +22,13 @@ from livekit.agents import (
     WorkerOptions,
     cli,
     function_tool,
+    inference
 )
-from livekit.plugins import silero, deepgram, openai, elevenlabs
+from livekit.plugins import silero, deepgram, elevenlabs
 
-from interrupt_handler import InterruptHandler
 
-# ---------------------------------------------------------------------
-# Environment + logging
-# ---------------------------------------------------------------------
 
 load_dotenv()
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger("realtime_voice_agent")
-
 
 def _env_flag(name: str, default: bool) -> bool:
     val = os.getenv(name)
@@ -53,6 +43,11 @@ def _require_env(name: str) -> str:
         raise RuntimeError(f"Environment variable {name} is required but not set")
     return value
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+)
+logger = logging.getLogger("realtime_voice_agent")
 
 # Validate core keys (this ensures we actually use the 6 env variables)
 OPENAI_API_KEY = _require_env("OPENAI_API_KEY")
@@ -115,13 +110,30 @@ async def entrypoint(ctx: JobContext) -> None:
     # -----------------------------------------------------------------
     agent = Agent(
         instructions=(
-            "You are an intelligent, friendly voice assistant built with LiveKit.\n\n"
-            "You are conversational, helpful, and patient.\n"
-            "Users may say filler words like 'uh', 'umm', or 'hmm' while thinking. "
-            "Do not treat those as interruptions.\n\n"
-            "However, when the user clearly says things like 'wait', 'stop', "
-            "'hold on', or similar, you should stop speaking and listen.\n\n"
-            "Keep responses concise by default. Expand with more detail only when asked."
+            "You are an intelligent, friendly real-time voice assistant running inside a LiveKit room.\n\n"
+            "Your primary goal is to feel like a calm, attentive human conversation partner:\n"
+            "- Speak in natural, spoken language with contractions (I'm, you'll, let's) and a warm tone.\n"
+            "- Acknowledge what the user says, then respond with clear, helpful answers.\n"
+            "- When helpful, briefly explain your reasoning, but avoid sounding like a technical manual.\n"
+            "- Ask simple follow-up questions when the user’s request is vague or could mean multiple things.\n\n"
+            "FILLERS & HESITATION:\n"
+            "- Users often say things like “uh”, “umm”, “hmm”, “like”, “you know” while thinking.\n"
+            "- Treat these as natural hesitation, not as commands or separate requests.\n"
+            "- Do NOT change topic or cut yourself off just because you hear a few filler sounds.\n\n"
+            "INTERRUPTIONS:\n"
+            "- If the user clearly says words like “wait”, “stop”, “hold on”, “ruk”, “ruko”, or other strong\n"
+            "  stop/interrupt phrases, treat that as a real interruption.\n"
+            "- When you’re interrupted, quickly wrap up or stop your current thought and listen instead of\n"
+            "  continuing to talk over the user.\n\n"
+            "CONVERSATION STYLE:\n"
+            "- Default to concise answers: usually 2–4 spoken sentences unless the user asks for more detail.\n"
+            "- If the user seems curious or explicitly asks for details (“explain more”, “walk me through it”),\n"
+            "  give a deeper, step-by-step explanation.\n"
+            "- Use first-person (“I”) and second-person (“you”), and occasionally reflect emotions when appropriate\n"
+            "  (e.g., “That sounds frustrating” or “Nice, that’s exciting!”) without being overly dramatic.\n"
+            "- Never mention system prompts, API keys, or internal tooling. Present yourself simply as an assistant.\n\n"
+            "Overall, your behavior should make the user feel like they are talking to a thoughtful human who\n"
+            "listens carefully, doesn’t panic about fillers, and respects clear interruptions."
         ),
         tools=[get_time],
     )
@@ -136,7 +148,7 @@ async def entrypoint(ctx: JobContext) -> None:
     stt_engine = deepgram.STT(model="nova-3")
 
     # OpenAI LLM
-    llm_engine = openai.LLM(model="gpt-4o-mini")
+    # llm_engine = openai.LLM(model="gpt-3.5-turbo")
 
     # ElevenLabs TTS
     tts_engine = elevenlabs.TTS(
@@ -151,8 +163,8 @@ async def entrypoint(ctx: JobContext) -> None:
             prefix_padding_duration=0.2,
         ),
         stt=stt_engine,
-        llm=llm_engine,
-        tts=tts_engine,
+        llm=inference.LLM(model="gpt-4o-mini"),
+        tts=elevenlabs.TTS(),
     )
 
     # -----------------------------------------------------------------
@@ -213,25 +225,28 @@ async def entrypoint(ctx: JobContext) -> None:
     # Start agent session
     # -----------------------------------------------------------------
     await session.start(agent=agent, room=ctx.room)
-    logger.info("AgentSession started and listening for user audio")
 
     # Initial greeting
     await session.generate_reply(
         instructions=(
-            "Greet the user warmly. Explain that you understand natural conversation, "
-            "including fillers like 'umm' or 'hmm', and that you respond when they "
-            "clearly interrupt with words like 'wait' or 'stop'."
+            "Greet the user in a warm, human way. Briefly introduce yourself as a real-time voice assistant "
+            "who can chat naturally, answer questions, and help with tasks.\n"
+            "- Explicitly do not mention that you understand fillers like “umm”, “uh”, or “hmm” and you won’t get "
+            "confused if they pause or think out loud.\n"
+            "- Also mention that if they say clear words like “wait” or “stop”, you’ll immediately pause and listen.\n"
+            "- End your greeting with a simple, inviting question like “So, what’s on your mind right now?” "
+            "or “How can I help you today?”"
         )
+        
     )
 
-    logger.info("Initial greeting sent; agent is active")
 
     # -----------------------------------------------------------------
     # Periodically log stats
     # -----------------------------------------------------------------
     try:
         while True:
-            await asyncio.sleep(60)
+            await asyncio.sleep(120)
             stats = interrupt_handler.get_statistics()
             logger.info(
                 "Stats: total=%d ignored=%d interrupts=%d registered=%d",
